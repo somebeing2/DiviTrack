@@ -2,38 +2,39 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 from datetime import date
-import re
 import time
 
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(page_title="DiviTrack | Dividend Auditor", layout="wide")
 
-# --- 2. SECURITY FUNCTIONS (NEW) ---
-def validate_ticker(ticker):
-    """
-    Security Check: 
-    1. specific length check to prevent buffer overflow attacks.
-    2. Regex check to ensure only A-Z, 0-9, and dot (.) are allowed.
-    """
-    ticker = ticker.upper().strip()
-    
-    # Check 1: Length Limit (Indian tickers rarely exceed 15 chars)
-    if len(ticker) > 20:
-        return False, "Ticker symbol is too long."
-    
-    # Check 2: Allowed Characters (Alphanumeric + Dot only)
-    # This prevents SQL Injection-style attacks or script injection
-    if not re.match("^[A-Z0-9.]*$", ticker):
-        return False, "Ticker contains invalid characters."
-        
-    return True, ticker
+# --- 2. HELPER FUNCTIONS ---
 
-# --- 3. DISCLAIMER & PRIVACY (LEGAL CHECK) ---
+@st.cache_data
+def load_stock_map():
+    """
+    Fetches a master list of NSE stocks so users can search by name.
+    Source: Open-source repository of NSE scripts.
+    """
+    try:
+        # We use a lightweight CSV containing Symbol and Company Name
+        url = "https://raw.githubusercontent.com/sfinias/NSE-Data/master/EQUITY_L.csv"
+        df = pd.read_csv(url)
+        
+        # Create a combined column for the dropdown: "Reliance Industries (RELIANCE)"
+        df['Search_Label'] = df['NAME OF COMPANY'] + " (" + df['SYMBOL'] + ")"
+        return df
+    except Exception as e:
+        return pd.DataFrame() # Fallback if internet fails
+
+# Load the list once
+stock_map_df = load_stock_map()
+
+# --- 3. DISCLAIMER & PRIVACY ---
 st.warning("""
     ⚠️ **IMPORTANT DISCLAIMER:**
-    * **Not Financial Advice:** This tool is for estimation only. Do not make investment decisions based solely on this data.
-    * **Verify Data:** Dividend data is fetched from Yahoo Finance APIs and may be delayed. Verify with your Form 26AS.
-    * **Tax Rules:** TDS calculations are estimates (10%) and do not account for specific exemptions (Form 15G/H).
+    * **Not Financial Advice:** This tool is for estimation only.
+    * **Verify Data:** Dividend data is fetched from Yahoo Finance APIs. Verify with your Form 26AS.
+    * **Tax Rules:** TDS calculations are estimates (10%) and do not account for specific exemptions.
 """)
 
 st.success("🔒 **Privacy Notice:** Your data is processed locally in RAM. It is never stored, saved, or shared. Refreshing this page wipes all data.")
@@ -42,36 +43,54 @@ st.success("🔒 **Privacy Notice:** Your data is processed locally in RAM. It i
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = []
 
-# --- 4. SIDEBAR: SECURE INPUTS ---
+# --- 4. SIDEBAR: SMART SEARCH INPUTS ---
 st.sidebar.header("💰 Add to Portfolio")
 
 with st.sidebar.form("add_stock_form"):
-    # Input
-    raw_ticker = st.text_input("Stock Symbol (e.g., ITC.NS)", "ITC.NS")
-    qty_input = st.number_input("Quantity", min_value=1, max_value=100000, value=100) # Added max_value for safety
+    
+    # --- NEW: SEARCHABLE DROPDOWN ---
+    if not stock_map_df.empty:
+        # If we successfully loaded the list, show the dropdown
+        selected_stock = st.selectbox(
+            "Search Stock Name", 
+            stock_map_df['Search_Label'],
+            index=None,
+            placeholder="Type to search (e.g. 'Tata Motors')"
+        )
+    else:
+        # Fallback to text input if the list failed to load
+        selected_stock = st.text_input("Stock Symbol (e.g., ITC.NS)", "ITC.NS")
+    
+    qty_input = st.number_input("Quantity", min_value=1, max_value=100000, value=100)
     buy_date_input = st.date_input("Purchase Date", date(2023, 1, 1))
     
     submitted = st.form_submit_button("Add Stock")
     
     if submitted:
-        # --- SECURITY CHECK ---
-        is_valid, clean_ticker = validate_ticker(raw_ticker)
-        
-        if is_valid:
-            # Indian Market Context Helper
-            if not clean_ticker.endswith(".NS") and not clean_ticker.endswith(".BO") and not clean_ticker.isalpha():
-                 st.sidebar.warning("Tip: For India, usually add .NS (e.g., RELIANCE.NS)")
+        if selected_stock:
+            # EXTRACT SYMBOL LOGIC
+            # If came from dropdown, it looks like "Company (SYMBOL)"
+            # We need to extract just "SYMBOL" and add ".NS"
             
+            if "(" in selected_stock and ")" in selected_stock:
+                # Extract text between parentheses
+                clean_symbol = selected_stock.split("(")[-1].replace(")", "").strip()
+                final_ticker = f"{clean_symbol}.NS"
+            else:
+                # Fallback for manual entry
+                clean_symbol = selected_stock.upper().strip()
+                final_ticker = clean_symbol if clean_symbol.endswith(".NS") else f"{clean_symbol}.NS"
+
             # Add to Session State
             st.session_state.portfolio.append({
-                "Ticker": clean_ticker,
+                "Ticker": final_ticker,
+                "Name": selected_stock.split("(")[0], # Store company name for display
                 "Qty": qty_input,
                 "BuyDate": buy_date_input
             })
-            st.success(f"Securely added {clean_ticker}")
+            st.success(f"Added {final_ticker}")
         else:
-            # If validation fails, show error
-            st.error(f"Security Alert: {clean_ticker}")
+            st.error("Please select a stock.")
 
 # Clear Button
 if st.sidebar.button("🗑️ Clear Portfolio"):
@@ -97,7 +116,6 @@ if len(st.session_state.portfolio) > 0:
     total_gross_dividend = 0
     all_payouts = []
 
-    # Progress bar for UX
     progress_text = "Scanning secure data streams..."
     my_bar = st.progress(0, text=progress_text)
     
@@ -108,7 +126,7 @@ if len(st.session_state.portfolio) > 0:
         qty = item['Qty']
         buy_date = pd.to_datetime(item['BuyDate'])
         
-        # Rate Limiting Simulation (Prevents API spamming)
+        # Rate Limiting
         time.sleep(0.1) 
         my_bar.progress((i + 1) / total_stocks, text=f"Verifying {ticker}...")
         
@@ -116,7 +134,7 @@ if len(st.session_state.portfolio) > 0:
             stock = yf.Ticker(ticker)
             div_history = stock.dividends
             
-            # CORE LOGIC: Filter by Ex-Date
+            # CORE LOGIC
             my_dividends = div_history[div_history.index > buy_date]
             
             if not my_dividends.empty:
@@ -138,7 +156,6 @@ if len(st.session_state.portfolio) > 0:
     my_bar.empty()
 
     # --- 8. RESULTS ---
-    # Tax Math
     tds_amount = total_gross_dividend * 0.10 if apply_tds else 0
     income_tax_amount = total_gross_dividend * (tax_slab / 100)
     final_in_hand = total_gross_dividend - income_tax_amount
@@ -167,12 +184,12 @@ if len(st.session_state.portfolio) > 0:
         st.info("No dividends found since purchase date.")
 
 else:
-    st.info("👈 Add stocks securely from the sidebar.")
+    st.info("👈 Use the smart search in the sidebar to add stocks.")
+
 # --- FOOTER ---
 st.markdown("---")
-
 st.markdown(
     "© 2026 | Built by **[Kevin Joseph](https://www.linkedin.com/in/kevin-joseph-in/)** | "
-    "Powered by [Yahoo Finance](https://pypi.org/project/yfinance/) & [Streamlit](https://streamlit.io)")
-
-st.caption("Disclaimer: This tool is for educational purposes and does not constitute financial advice. Always verify with official documents.")
+    "Powered by [Yahoo Finance](https://pypi.org/project/yfinance/) & [Streamlit](https://streamlit.io)"
+)
+st.caption("Disclaimer: This tool is for educational purposes and does not constitute financial advice.")
