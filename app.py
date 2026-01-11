@@ -223,4 +223,5 @@ else:
 st.markdown("---")
 st.markdown(
     "© 2026 | Built by **[Kevin Joseph](https://www.linkedin.com/in/YOUR_LINKEDIN_ID_HERE)** | "
-    "Powered by [Yahoo Finance](
+    "Powered by [Yahoo Finance]")
+
