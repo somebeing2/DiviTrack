@@ -134,6 +134,8 @@ if len(st.session_state.portfolio) > 0:
         ticker = item['Ticker']
         name = item.get('Name', ticker) 
         qty = item['Qty']
+        
+        # Ensure buy_date is a pandas timestamp
         buy_date = pd.to_datetime(item['BuyDate'])
         
         # Rate Limiting
@@ -141,14 +143,16 @@ if len(st.session_state.portfolio) > 0:
         my_bar.progress((i + 1) / total_stocks, text=f"Verifying {name}...")
         
         try:
-            # --- SIMPLIFIED FETCHING (Reverted to standard) ---
             stock = yf.Ticker(ticker)
             div_history = stock.dividends
             
             if div_history.empty:
-                # Log a silent warning but don't crash
                 print(f"No data for {ticker}")
             else:
+                # --- FIX FOR TIMEZONE ERROR ---
+                # Remove timezone awareness from Yahoo data so it matches 'buy_date'
+                div_history.index = div_history.index.tz_localize(None)
+                
                 # CORE LOGIC
                 my_dividends = div_history[div_history.index > buy_date]
                 
