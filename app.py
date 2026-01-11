@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 from datetime import date
 import time
+import re
 
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(page_title="DiviTrack | Dividend Auditor", layout="wide")
@@ -12,21 +13,24 @@ st.set_page_config(page_title="DiviTrack | Dividend Auditor", layout="wide")
 @st.cache_data
 def load_stock_map():
     """
-    Fetches a master list of NSE stocks so users can search by name.
-    Source: Open-source repository of NSE scripts.
+    Reads the local 'EQUITY_L.csv' file to get the official list of NSE stocks.
+    This ensures access to ALL ~1900+ companies (Small Cap, Mid Cap, etc.)
+    without relying on external internet links.
     """
     try:
-        # We use a lightweight CSV containing Symbol and Company Name
-        url = "https://raw.githubusercontent.com/sfinias/NSE-Data/master/EQUITY_L.csv"
-        df = pd.read_csv(url)
+        # Read the file directly from the repo. 
+        # 'on_bad_lines' helps skip any messy rows if the CSV is imperfect.
+        df = pd.read_csv("EQUITY_L.csv")
         
-        # Create a combined column for the dropdown: "Reliance Industries (RELIANCE)"
+        # Create a search label: "Wipro Ltd (WIPRO)"
+        # We assume the standard NSE CSV columns: 'NAME OF COMPANY' and 'SYMBOL'
         df['Search_Label'] = df['NAME OF COMPANY'] + " (" + df['SYMBOL'] + ")"
         return df
-    except Exception as e:
-        return pd.DataFrame() # Fallback if internet fails
+    except Exception:
+        # Returns empty if file is missing or unreadable
+        return pd.DataFrame()
 
-# Load the list once
+# Load the data once
 stock_map_df = load_stock_map()
 
 # --- 3. DISCLAIMER & PRIVACY ---
@@ -43,54 +47,62 @@ st.success("🔒 **Privacy Notice:** Your data is processed locally in RAM. It i
 if 'portfolio' not in st.session_state:
     st.session_state.portfolio = []
 
-# --- 4. SIDEBAR: SMART SEARCH INPUTS ---
+# --- 4. SIDEBAR: SMART INPUTS ---
 st.sidebar.header("💰 Add to Portfolio")
 
 with st.sidebar.form("add_stock_form"):
     
-    # --- NEW: SEARCHABLE DROPDOWN ---
+    # --- LOGIC: SEARCHABLE DROPDOWN ---
+    selected_ticker_symbol = None
+    selected_stock_name = None
+    
+    # Check if we successfully loaded the CSV list
     if not stock_map_df.empty:
-        # If we successfully loaded the list, show the dropdown
-        selected_stock = st.selectbox(
+        user_selection = st.selectbox(
             "Search Stock Name", 
             stock_map_df['Search_Label'],
             index=None,
-            placeholder="Type to search (e.g. 'Tata Motors')"
+            placeholder="Type 'Zomato' or 'Federal Bank'..."
         )
+        
+        if user_selection:
+            # EXTRACT SYMBOL LOGIC
+            # Format is: "The Federal Bank Ltd (FEDERALBNK)"
+            # We split by '(' and take the last part to get "FEDERALBNK)"
+            # Then replace ')' to get "FEDERALBNK"
+            clean_symbol = user_selection.split("(")[-1].replace(")", "").strip()
+            selected_ticker_symbol = f"{clean_symbol}.NS"
+            selected_stock_name = user_selection.split("(")[0].strip()
+            
     else:
-        # Fallback to text input if the list failed to load
-        selected_stock = st.text_input("Stock Symbol (e.g., ITC.NS)", "ITC.NS")
-    
+        # FALLBACK: If CSV is missing, show manual text box
+        st.error("⚠️ 'EQUITY_L.csv' not found. Please upload it to GitHub.")
+        raw_input = st.text_input("Stock Symbol (Manual)", "ITC.NS")
+        
+        if raw_input:
+            # Clean up manual input (remove spaces, uppercase)
+            clean_symbol = raw_input.upper().replace(" ", "").strip()
+            # Ensure it ends with .NS
+            selected_ticker_symbol = clean_symbol if clean_symbol.endswith(".NS") else f"{clean_symbol}.NS"
+            selected_stock_name = selected_ticker_symbol
+
+    # Common Inputs
     qty_input = st.number_input("Quantity", min_value=1, max_value=100000, value=100)
     buy_date_input = st.date_input("Purchase Date", date(2023, 1, 1))
     
     submitted = st.form_submit_button("Add Stock")
     
     if submitted:
-        if selected_stock:
-            # EXTRACT SYMBOL LOGIC
-            # If came from dropdown, it looks like "Company (SYMBOL)"
-            # We need to extract just "SYMBOL" and add ".NS"
-            
-            if "(" in selected_stock and ")" in selected_stock:
-                # Extract text between parentheses
-                clean_symbol = selected_stock.split("(")[-1].replace(")", "").strip()
-                final_ticker = f"{clean_symbol}.NS"
-            else:
-                # Fallback for manual entry
-                clean_symbol = selected_stock.upper().strip()
-                final_ticker = clean_symbol if clean_symbol.endswith(".NS") else f"{clean_symbol}.NS"
-
-            # Add to Session State
+        if selected_ticker_symbol:
             st.session_state.portfolio.append({
-                "Ticker": final_ticker,
-                "Name": selected_stock.split("(")[0], # Store company name for display
+                "Ticker": selected_ticker_symbol,
+                "Name": selected_stock_name,
                 "Qty": qty_input,
                 "BuyDate": buy_date_input
             })
-            st.success(f"Added {final_ticker}")
+            st.success(f"Added {selected_stock_name}")
         else:
-            st.error("Please select a stock.")
+            st.error("Please select or enter a stock.")
 
 # Clear Button
 if st.sidebar.button("🗑️ Clear Portfolio"):
@@ -123,18 +135,19 @@ if len(st.session_state.portfolio) > 0:
     
     for i, item in enumerate(st.session_state.portfolio):
         ticker = item['Ticker']
+        name = item.get('Name', ticker) # Fallback to ticker if name missing
         qty = item['Qty']
         buy_date = pd.to_datetime(item['BuyDate'])
         
         # Rate Limiting
-        time.sleep(0.1) 
-        my_bar.progress((i + 1) / total_stocks, text=f"Verifying {ticker}...")
+        time.sleep(0.05) 
+        my_bar.progress((i + 1) / total_stocks, text=f"Verifying {name}...")
         
         try:
             stock = yf.Ticker(ticker)
             div_history = stock.dividends
             
-            # CORE LOGIC
+            # CORE LOGIC: Filter by Ex-Date
             my_dividends = div_history[div_history.index > buy_date]
             
             if not my_dividends.empty:
@@ -143,7 +156,8 @@ if len(st.session_state.portfolio) > 0:
                     total_gross_dividend += payout
                     
                     all_payouts.append({
-                        "Stock": ticker,
+                        "Stock": name,
+                        "Symbol": ticker,
                         "Ex-Date": date_val.date(),
                         "Dividend/Share": f"₹{amount}",
                         "Qty": qty,
@@ -151,7 +165,7 @@ if len(st.session_state.portfolio) > 0:
                     })
             
         except Exception as e:
-            st.error(f"Data Error for {ticker}. Check symbol.")
+            st.error(f"Data Error for {name}. Check symbol.")
 
     my_bar.empty()
 
@@ -189,7 +203,7 @@ else:
 # --- FOOTER ---
 st.markdown("---")
 st.markdown(
-    "© 2026 | Built by **[Kevin Joseph](https://www.linkedin.com/in/kevin-joseph-in/)** | "
+    "© 2026 | Built by **[Kevin Joseph](https://www.linkedin.com/in/YOUR_LINKEDIN_ID_HERE)** | "
     "Powered by [Yahoo Finance](https://pypi.org/project/yfinance/) & [Streamlit](https://streamlit.io)"
 )
 st.caption("Disclaimer: This tool is for educational purposes and does not constitute financial advice.")
