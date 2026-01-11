@@ -1,9 +1,9 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests
 from datetime import date
 import time
-import re
 
 # --- 1. PAGE CONFIGURATION ---
 st.set_page_config(page_title="DiviTrack | Dividend Auditor", layout="wide")
@@ -18,12 +18,14 @@ def load_stock_map():
     without relying on external internet links.
     """
     try:
-        # Read the file directly from the repo. 
-        # 'on_bad_lines' helps skip any messy rows if the CSV is imperfect.
-        df = pd.read_csv("EQUITY_L.csv")
+        # Read the file directly from the repo.
+        # 'on_bad_lines' skips messy rows if the CSV is imperfect.
+        df = pd.read_csv("EQUITY_L.csv", on_bad_lines='skip')
+        
+        # Standardize columns (remove extra spaces)
+        df.columns = [c.strip() for c in df.columns]
         
         # Create a search label: "Wipro Ltd (WIPRO)"
-        # We assume the standard NSE CSV columns: 'NAME OF COMPANY' and 'SYMBOL'
         df['Search_Label'] = df['NAME OF COMPANY'] + " (" + df['SYMBOL'] + ")"
         return df
     except Exception:
@@ -68,11 +70,13 @@ with st.sidebar.form("add_stock_form"):
         if user_selection:
             # EXTRACT SYMBOL LOGIC
             # Format is: "The Federal Bank Ltd (FEDERALBNK)"
-            # We split by '(' and take the last part to get "FEDERALBNK)"
-            # Then replace ')' to get "FEDERALBNK"
-            clean_symbol = user_selection.split("(")[-1].replace(")", "").strip()
-            selected_ticker_symbol = f"{clean_symbol}.NS"
-            selected_stock_name = user_selection.split("(")[0].strip()
+            # We split by '(' and take the last part.
+            try:
+                clean_symbol = user_selection.split("(")[-1].replace(")", "").strip()
+                selected_ticker_symbol = f"{clean_symbol}.NS"
+                selected_stock_name = user_selection.split("(")[0].strip()
+            except:
+                st.error("Error parsing stock name. Please use manual entry.")
             
     else:
         # FALLBACK: If CSV is missing, show manual text box
@@ -133,39 +137,54 @@ if len(st.session_state.portfolio) > 0:
     
     total_stocks = len(st.session_state.portfolio)
     
+    # --- ANTI-BLOCKING SESSION (CRITICAL FIX) ---
+    # We create a fake browser session so Yahoo doesn't block us
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+
     for i, item in enumerate(st.session_state.portfolio):
         ticker = item['Ticker']
-        name = item.get('Name', ticker) # Fallback to ticker if name missing
+        name = item.get('Name', ticker) 
         qty = item['Qty']
         buy_date = pd.to_datetime(item['BuyDate'])
         
         # Rate Limiting
-        time.sleep(0.05) 
+        time.sleep(0.1) 
         my_bar.progress((i + 1) / total_stocks, text=f"Verifying {name}...")
         
         try:
-            stock = yf.Ticker(ticker)
+            # Pass the fake session to yfinance
+            stock = yf.Ticker(ticker, session=session)
             div_history = stock.dividends
             
-            # CORE LOGIC: Filter by Ex-Date
-            my_dividends = div_history[div_history.index > buy_date]
-            
-            if not my_dividends.empty:
-                for date_val, amount in my_dividends.items():
-                    payout = amount * qty
-                    total_gross_dividend += payout
-                    
-                    all_payouts.append({
-                        "Stock": name,
-                        "Symbol": ticker,
-                        "Ex-Date": date_val.date(),
-                        "Dividend/Share": f"₹{amount}",
-                        "Qty": qty,
-                        "Total Payout": round(payout, 2)
-                    })
+            # Check if data is empty (Fixes "Data Error" ambiguity)
+            if div_history.empty:
+                # Silent fail - just log nothing for this stock
+                # or you could raise an error if you want to warn user
+                pass
+            else:
+                # CORE LOGIC: Filter by Ex-Date
+                my_dividends = div_history[div_history.index > buy_date]
+                
+                if not my_dividends.empty:
+                    for date_val, amount in my_dividends.items():
+                        payout = amount * qty
+                        total_gross_dividend += payout
+                        
+                        all_payouts.append({
+                            "Stock": name,
+                            "Symbol": ticker,
+                            "Ex-Date": date_val.date(),
+                            "Dividend/Share": f"₹{amount}",
+                            "Qty": qty,
+                            "Total Payout": round(payout, 2)
+                        })
             
         except Exception as e:
-            st.error(f"Data Error for {name}. Check symbol.")
+            # Specific error handling
+            st.error(f"Could not fetch data for {name} ({ticker}). Server message: {e}")
 
     my_bar.empty()
 
@@ -204,6 +223,4 @@ else:
 st.markdown("---")
 st.markdown(
     "© 2026 | Built by **[Kevin Joseph](https://www.linkedin.com/in/YOUR_LINKEDIN_ID_HERE)** | "
-    "Powered by [Yahoo Finance](https://pypi.org/project/yfinance/) & [Streamlit](https://streamlit.io)"
-)
-st.caption("Disclaimer: This tool is for educational purposes and does not constitute financial advice.")
+    "Powered by [Yahoo Finance](
