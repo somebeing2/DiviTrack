@@ -1,7 +1,6 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests
 from datetime import date
 import time
 
@@ -14,8 +13,6 @@ st.set_page_config(page_title="DiviTrack | Dividend Auditor", layout="wide")
 def load_stock_map():
     """
     Reads the local 'EQUITY_L.csv' file to get the official list of NSE stocks.
-    This ensures access to ALL ~1900+ companies (Small Cap, Mid Cap, etc.)
-    without relying on external internet links.
     """
     try:
         # Read the file directly from the repo.
@@ -29,7 +26,6 @@ def load_stock_map():
         df['Search_Label'] = df['NAME OF COMPANY'] + " (" + df['SYMBOL'] + ")"
         return df
     except Exception:
-        # Returns empty if file is missing or unreadable
         return pd.DataFrame()
 
 # Load the data once
@@ -69,9 +65,8 @@ with st.sidebar.form("add_stock_form"):
         
         if user_selection:
             # EXTRACT SYMBOL LOGIC
-            # Format is: "The Federal Bank Ltd (FEDERALBNK)"
-            # We split by '(' and take the last part.
             try:
+                # "The Federal Bank Ltd (FEDERALBNK)" -> "FEDERALBNK"
                 clean_symbol = user_selection.split("(")[-1].replace(")", "").strip()
                 selected_ticker_symbol = f"{clean_symbol}.NS"
                 selected_stock_name = user_selection.split("(")[0].strip()
@@ -84,9 +79,7 @@ with st.sidebar.form("add_stock_form"):
         raw_input = st.text_input("Stock Symbol (Manual)", "ITC.NS")
         
         if raw_input:
-            # Clean up manual input (remove spaces, uppercase)
             clean_symbol = raw_input.upper().replace(" ", "").strip()
-            # Ensure it ends with .NS
             selected_ticker_symbol = clean_symbol if clean_symbol.endswith(".NS") else f"{clean_symbol}.NS"
             selected_stock_name = selected_ticker_symbol
 
@@ -137,13 +130,6 @@ if len(st.session_state.portfolio) > 0:
     
     total_stocks = len(st.session_state.portfolio)
     
-    # --- ANTI-BLOCKING SESSION (CRITICAL FIX) ---
-    # We create a fake browser session so Yahoo doesn't block us
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    })
-
     for i, item in enumerate(st.session_state.portfolio):
         ticker = item['Ticker']
         name = item.get('Name', ticker) 
@@ -155,17 +141,15 @@ if len(st.session_state.portfolio) > 0:
         my_bar.progress((i + 1) / total_stocks, text=f"Verifying {name}...")
         
         try:
-            # Pass the fake session to yfinance
-            stock = yf.Ticker(ticker, session=session)
+            # --- SIMPLIFIED FETCHING (Reverted to standard) ---
+            stock = yf.Ticker(ticker)
             div_history = stock.dividends
             
-            # Check if data is empty (Fixes "Data Error" ambiguity)
             if div_history.empty:
-                # Silent fail - just log nothing for this stock
-                # or you could raise an error if you want to warn user
-                pass
+                # Log a silent warning but don't crash
+                print(f"No data for {ticker}")
             else:
-                # CORE LOGIC: Filter by Ex-Date
+                # CORE LOGIC
                 my_dividends = div_history[div_history.index > buy_date]
                 
                 if not my_dividends.empty:
@@ -183,8 +167,7 @@ if len(st.session_state.portfolio) > 0:
                         })
             
         except Exception as e:
-            # Specific error handling
-            st.error(f"Could not fetch data for {name} ({ticker}). Server message: {e}")
+            st.error(f"Could not fetch data for {name} ({ticker}). Error: {e}")
 
     my_bar.empty()
 
@@ -223,5 +206,6 @@ else:
 st.markdown("---")
 st.markdown(
     "© 2026 | Built by **[Kevin Joseph](https://www.linkedin.com/in/YOUR_LINKEDIN_ID_HERE)** | "
-    "Powered by [Yahoo Finance]")
-
+    "Powered by [Yahoo Finance](https://pypi.org/project/yfinance/) & [Streamlit](https://streamlit.io)"
+)
+st.caption("Disclaimer: This tool is for educational purposes and does not constitute financial advice.")
