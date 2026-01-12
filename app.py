@@ -12,20 +12,38 @@ st.set_page_config(page_title="DiviTrack | Dividend Auditor", layout="wide")
 @st.cache_data
 def load_stock_map():
     """
-    Reads the local 'EQUITY_L.csv' file to get the official list of NSE stocks.
+    Reads the local 'EQUITY_L.csv' file AND adds REITs/InvITs to the search list.
     """
     try:
-        # Read the file directly from the repo.
+        # 1. Load standard equities from the CSV
         # 'on_bad_lines' skips messy rows if the CSV is imperfect.
         df = pd.read_csv("EQUITY_L.csv", on_bad_lines='skip')
         
         # Standardize columns (remove extra spaces)
         df.columns = [c.strip() for c in df.columns]
         
-        # Create a search label: "Wipro Ltd (WIPRO)"
+        # 2. DEFINE REITS & INVITs (Manually added because they aren't in EQUITY_L.csv)
+        reits_data = [
+            {"NAME OF COMPANY": "Embassy Office Parks REIT", "SYMBOL": "EMBASSY"},
+            {"NAME OF COMPANY": "Mindspace Business Parks REIT", "SYMBOL": "MINDSPACE"},
+            {"NAME OF COMPANY": "Brookfield India Real Estate Trust", "SYMBOL": "BIRET"},
+            {"NAME OF COMPANY": "Nexus Select Trust", "SYMBOL": "NEXUS"},
+            {"NAME OF COMPANY": "India Grid Trust", "SYMBOL": "INDIAGRID"},
+            {"NAME OF COMPANY": "PowerGrid InvIT", "SYMBOL": "PGINVIT"},
+            {"NAME OF COMPANY": "IRB InvIT Fund", "SYMBOL": "IRBINVIT"},
+            {"NAME OF COMPANY": "Shrem InvIT", "SYMBOL": "SHREMINVIT"}
+        ]
+        
+        # 3. Combine standard stocks with REITs
+        df_reits = pd.DataFrame(reits_data)
+        # Use concat to merge them
+        df = pd.concat([df, df_reits], ignore_index=True)
+        
+        # 4. Create the search label: "Wipro Ltd (WIPRO)"
         df['Search_Label'] = df['NAME OF COMPANY'] + " (" + df['SYMBOL'] + ")"
         return df
     except Exception:
+        # Returns empty if file is missing or unreadable
         return pd.DataFrame()
 
 # Load the data once
@@ -60,7 +78,7 @@ with st.sidebar.form("add_stock_form"):
             "Search Stock Name", 
             stock_map_df['Search_Label'],
             index=None,
-            placeholder="Type 'Zomato' or 'Federal Bank'..."
+            placeholder="Type 'Zomato' or 'Embassy'..."
         )
         
         if user_selection:
@@ -209,7 +227,7 @@ else:
 # --- FOOTER ---
 st.markdown("---")
 st.markdown(
-    "© 2026 | Built by **[Kevin Joseph](https://www.linkedin.com/in/YOUR_LINKEDIN_ID_HERE)** | "
+    "© 2026 | Built by **[Kevin Joseph]( https://www.linkedin.com/in/kevin-joseph-in/)** | "
     "Powered by [Yahoo Finance](https://pypi.org/project/yfinance/) & [Streamlit](https://streamlit.io)"
 )
 st.caption("Disclaimer: This tool is for educational purposes and does not constitute financial advice.")
